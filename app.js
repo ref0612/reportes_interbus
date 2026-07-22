@@ -177,28 +177,22 @@
   }
 
   // ================================================================
-  // DETECCIÓN DE RECAUDACIÓN - VERSIÓN CORREGIDA (GETNET)
+  // DETECCIÓN DE RECAUDACIÓN - CORREGIDO: GETNET Y OTROS
   // ================================================================
 
   function detectRecaudacionSchema(headers) {
     const columnas = {};
-
-    // Normalizar todos los headers para búsquedas
     const normalizedHeaders = headers.map(h => normalizeHeader(h));
 
-    // Función auxiliar para buscar por varios criterios
     function buscarColumna(patronesExactos, patronesParciales, regexes) {
-      // 1. Coincidencia exacta (normalizada)
       for (const patron of patronesExactos) {
         const idx = normalizedHeaders.findIndex(nh => nh === patron);
         if (idx !== -1) return headers[idx];
       }
-      // 2. Coincidencia parcial (includes)
       for (const patron of patronesParciales) {
         const idx = normalizedHeaders.findIndex(nh => nh.includes(patron));
         if (idx !== -1) return headers[idx];
       }
-      // 3. Regex
       for (const re of regexes) {
         const idx = normalizedHeaders.findIndex(nh => re.test(nh));
         if (idx !== -1) return headers[idx];
@@ -206,84 +200,73 @@
       return null;
     }
 
-    // EFECTIVO
     columnas.efectivoCamino = buscarColumna(
       ['efectivo del oficial de campo'],
       ['efectivo oficial campo'],
       [/efectivo.*oficial.*campo/]
     );
 
-    // GETNET - CORREGIDO: Buscar "Getnet del oficial de campo"
+    // GETNET - CORREGIDO: buscar "Getnet del oficial de campo"
     columnas.getnetCamino = buscarColumna(
       ['getnet del oficial de campo'],
       ['getnet oficial campo', 'getnet'],
       [/getnet.*oficial.*campo/, /getnet/]
     );
 
-    // RECAUDACIÓN CAMINO
     columnas.recCamino = buscarColumna(
       ['recaudacion en camino'],
       ['recaudacion camino'],
       [/recaudacion.*camino/]
     );
 
-    // ASIENTOS CAMINO
     columnas.asientosCamino = buscarColumna(
       ['asientos recaudacion en camino'],
       ['asientos recaudacion camino', 'asientos camino'],
       [/asientos.*camino/]
     );
 
-    // RECAUDACIÓN SUCURSAL
     columnas.recSucursal = buscarColumna(
       ['recaudacion en sucursal'],
       ['recaudacion sucursal'],
       [/recaudacion.*sucursal/]
     );
 
-    // ASIENTOS SUCURSAL
     columnas.asientosSucursal = buscarColumna(
       ['asientos recaudacion en sucursal'],
       ['asientos recaudacion sucursal', 'asientos sucursal'],
       [/asientos.*sucursal/]
     );
 
-    // BUS
     columnas.bus = buscarColumna(
       ['bus'],
       ['n° de bus', 'nro bus', 'numero bus'],
       [/^bus$/, /n.*de.*bus/, /nro.*bus/]
     );
 
-    // PATENTE
     columnas.patente = buscarColumna(
       ['patente'],
       ['patente', 'placa'],
       [/patente/, /placa/]
     );
 
-    // SERVICIO
     columnas.servicio = buscarColumna(
       ['servicio'],
       ['servicio'],
       [/servicio/]
     );
 
-    // FECHA
     columnas.fecha = buscarColumna(
       ['fecha de viaje'],
       ['fecha viaje', 'fecha'],
       [/fecha.*viaje/]
     );
 
-    // ORIGEN
     columnas.origen = buscarColumna(
       ['origen'],
       ['origen'],
       [/origen/]
     );
 
-    // DESTINO
     columnas.destino = buscarColumna(
       ['destino'],
       ['destino'],
@@ -399,7 +382,7 @@
   }
 
   // ================================================================
-  // 5. PROCESAMIENTO PRINCIPAL
+  // 5. PROCESAMIENTO PRINCIPAL (CON MATCHING MEJORADO)
   // ================================================================
 
   function runProcess() {
@@ -501,7 +484,7 @@
 
       recFile.data.forEach(row => {
         // ============================================================
-        // MATCHING EN CASCADA
+        // MATCHING EN CASCADA (MEJORADO)
         // ============================================================
 
         // 1. Coincidencia exacta por N° Bus
@@ -515,15 +498,22 @@
           if (info) busFound = true;
         }
 
-        // 2. Búsqueda de número dentro del texto
+        // 2. Búsqueda de número dentro del texto (SOLO si el campo Bus es numérico)
         if (!busFound && flotaSchema.keyType === 'busnum') {
-          const rowText = Object.values(row).join(' ').toUpperCase();
-          for (const [key, value] of busIndex) {
-            if (rowText.includes(key)) {
-              info = value;
-              norm = key;
-              busFound = true;
-              break;
+          // Verificar si rawKey es numérico (limpiamos caracteres no numéricos)
+          const cleanRaw = String(rawKey || '').replace(/[^0-9]/g, '');
+          if (cleanRaw.length > 0 && /^\d+$/.test(cleanRaw)) {
+            // Solo buscar si el campo Bus contiene un número
+            const rowText = Object.values(row).join(' ').toUpperCase();
+            for (const [key, value] of busIndex) {
+              // Usar límites de palabra para evitar falsos positivos
+              const regex = new RegExp('\\b' + key + '\\b');
+              if (regex.test(rowText)) {
+                info = value;
+                norm = key;
+                busFound = true;
+                break;
+              }
             }
           }
         }
@@ -558,7 +548,7 @@
         const recCamino = recaudacionSchema.recCamino ? parseMoneyCL(row[recaudacionSchema.recCamino]) : 0;
         const asientosCamino = recaudacionSchema.asientosCamino ? toInt(row[recaudacionSchema.asientosCamino]) : 0;
 
-        // EFECTIVO Y GETNET - AHORA CON LA COLUMNA CORRECTA
+        // EFECTIVO Y GETNET
         const efectivoCamino = recaudacionSchema.efectivoCamino ? parseMoneyCL(row[recaudacionSchema.efectivoCamino]) : 0;
         const getnetCamino = recaudacionSchema.getnetCamino ? parseMoneyCL(row[recaudacionSchema.getnetCamino]) : 0;
 
@@ -611,11 +601,14 @@
       log.push({ t: unmatched ? 'warn' : 'ok', m: `Servicios cruzados con éxito: ${matched}  ·  sin propietario identificado: ${unmatched}  ·  sin bus válido en la fila: ${invalidKey}` });
 
       // ============================================================
-      // AGRUPACIÓN POR PROPIETARIO
+      // AGRUPACIÓN POR PROPIETARIO (excluyendo "Sin asignar" si se desea)
       // ============================================================
 
       const ownerMap = new Map();
       consolidated.forEach(row => {
+        // Solo agrupar si tiene un propietario válido (no "Sin asignar" ni "Sin dato de bus")
+        // Si quieres que "Sin asignar" también aparezca, elimina esta condición o modifícala.
+        // Por ahora, incluimos todo.
         const key = row.propietario;
         if (!ownerMap.has(key)) {
           ownerMap.set(key, {
@@ -907,7 +900,7 @@
       'Asientos Camino': o.asientosCamino,
       'Recaudación Total': Math.round(o.recTotal),
       'Asientos Total': o.asientosTotal,
-      'Promedio Por Servicio': Math.round(o.ticketProm)
+      'Ticket Promedio': Math.round(o.ticketProm)
     }));
     const wsResumen = XLSX.utils.json_to_sheet(resumenData);
     wsResumen['!cols'] = autoWidth(resumenData);
