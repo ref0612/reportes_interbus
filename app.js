@@ -1,12 +1,17 @@
 (function() {
   "use strict";
 
-  /* ================================================================
-   *  UTILIDADES GENERALES
-   * ================================================================ */
+  // ================================================================
+  // 1. UTILIDADES BÁSICAS
+  // ================================================================
 
   function normalizeHeader(h) {
-    return String(h || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/\s+/g, ' ');
+    return String(h || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, ' ');
   }
 
   function parseCSV(text) {
@@ -25,7 +30,7 @@
       } else {
         if (c === '"') inQuotes = true;
         else if (c === ',') { row.push(field);
-          field = ''; } else if (c === '\r') { /* ignore, \n handles break */ } else if (c === '\n') { row.push(field);
+          field = ''; } else if (c === '\r') { /* ignore */ } else if (c === '\n') { row.push(field);
           rows.push(row);
           row = [];
           field = ''; } else field += c;
@@ -94,6 +99,13 @@
 
   function fmtInt(n) { return Math.round(n || 0).toLocaleString('es-CL'); }
 
+  function escHtml(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
   function findColumn(headers, regexes) {
     for (const re of regexes) {
       const match = headers.find(h => re.test(normalizeHeader(h)));
@@ -115,6 +127,10 @@
     }
     return { col: best, fillRate: bestScore };
   }
+
+  // ================================================================
+  // 2. DETECCIÓN DE ESQUEMAS
+  // ================================================================
 
   function classifyFile(headers) {
     const norm = headers.map(normalizeHeader);
@@ -147,9 +163,7 @@
       keyFillRate = 1;
     }
     const ownerCand = bestFillColumn(headers, rows, /propietari|owner|empresarioste|dueno/);
-    // También buscar "Nombre propietario" o "Empresarioste" directamente
     const ownerCol = ownerCand ? ownerCand.col : null;
-    // Si no se encontró con el regex, buscar columnas específicas
     const nombrePropietario = findColumn(headers, [/^nombre propietario$/, /^propietario$/]);
     const empresarioste = findColumn(headers, [/empresarioste/]);
     const finalOwnerCol = nombrePropietario || empresarioste || ownerCol;
@@ -162,33 +176,134 @@
     };
   }
 
-  function detectRecaudacionSchema(headers, rows, flotaKeyType) {
-    let keyCol = null;
-    if (flotaKeyType === 'patente') {
-      const c = bestFillColumn(headers, rows, /patente|placa/);
-      keyCol = c ? c.col : null;
-    } else {
-      const c = bestFillColumn(headers, rows, /^bus$|n.*de.*bus|nro.*bus/);
-      keyCol = c ? c.col : null;
+  // ================================================================
+  // DETECCIÓN DE RECAUDACIÓN - VERSIÓN CORREGIDA (GETNET)
+  // ================================================================
+
+  function detectRecaudacionSchema(headers) {
+    const columnas = {};
+
+    // Normalizar todos los headers para búsquedas
+    const normalizedHeaders = headers.map(h => normalizeHeader(h));
+
+    // Función auxiliar para buscar por varios criterios
+    function buscarColumna(patronesExactos, patronesParciales, regexes) {
+      // 1. Coincidencia exacta (normalizada)
+      for (const patron of patronesExactos) {
+        const idx = normalizedHeaders.findIndex(nh => nh === patron);
+        if (idx !== -1) return headers[idx];
+      }
+      // 2. Coincidencia parcial (includes)
+      for (const patron of patronesParciales) {
+        const idx = normalizedHeaders.findIndex(nh => nh.includes(patron));
+        if (idx !== -1) return headers[idx];
+      }
+      // 3. Regex
+      for (const re of regexes) {
+        const idx = normalizedHeaders.findIndex(nh => re.test(nh));
+        if (idx !== -1) return headers[idx];
+      }
+      return null;
     }
-    if (!keyCol) {
-      const alt = bestFillColumn(headers, rows, /patente|placa/) || bestFillColumn(headers, rows, /^bus/);
-      keyCol = alt ? alt.col : headers[0];
-    }
+
+    // EFECTIVO
+    columnas.efectivoCamino = buscarColumna(
+      ['efectivo del oficial de campo'],
+      ['efectivo oficial campo'],
+      [/efectivo.*oficial.*campo/]
+    );
+
+    // GETNET - CORREGIDO: Buscar "Getnet del oficial de campo"
+    columnas.getnetCamino = buscarColumna(
+      ['getnet del oficial de campo'],
+      ['getnet oficial campo', 'getnet'],
+      [/getnet.*oficial.*campo/, /getnet/]
+    );
+
+    // RECAUDACIÓN CAMINO
+    columnas.recCamino = buscarColumna(
+      ['recaudacion en camino'],
+      ['recaudacion camino'],
+      [/recaudacion.*camino/]
+    );
+
+    // ASIENTOS CAMINO
+    columnas.asientosCamino = buscarColumna(
+      ['asientos recaudacion en camino'],
+      ['asientos recaudacion camino', 'asientos camino'],
+      [/asientos.*camino/]
+    );
+
+    // RECAUDACIÓN SUCURSAL
+    columnas.recSucursal = buscarColumna(
+      ['recaudacion en sucursal'],
+      ['recaudacion sucursal'],
+      [/recaudacion.*sucursal/]
+    );
+
+    // ASIENTOS SUCURSAL
+    columnas.asientosSucursal = buscarColumna(
+      ['asientos recaudacion en sucursal'],
+      ['asientos recaudacion sucursal', 'asientos sucursal'],
+      [/asientos.*sucursal/]
+    );
+
+    // BUS
+    columnas.bus = buscarColumna(
+      ['bus'],
+      ['n° de bus', 'nro bus', 'numero bus'],
+      [/^bus$/, /n.*de.*bus/, /nro.*bus/]
+    );
+
+    // PATENTE
+    columnas.patente = buscarColumna(
+      ['patente'],
+      ['patente', 'placa'],
+      [/patente/, /placa/]
+    );
+
+    // SERVICIO
+    columnas.servicio = buscarColumna(
+      ['servicio'],
+      ['servicio'],
+      [/servicio/]
+    );
+
+    // FECHA
+    columnas.fecha = buscarColumna(
+      ['fecha de viaje'],
+      ['fecha viaje', 'fecha'],
+      [/fecha.*viaje/]
+    );
+
+    // ORIGEN
+    columnas.origen = buscarColumna(
+      ['origen'],
+      ['origen'],
+      [/origen/]
+    );
+
+    // DESTINO
+    columnas.destino = buscarColumna(
+      ['destino'],
+      ['destino'],
+      [/destino/]
+    );
+
+    return columnas;
+  }
+
+  function detectVentasSchema(headers) {
     return {
-      keyCol,
-      fechaCol: findColumn(headers, [/fecha.*viaje/, /fecha viaje/]),
+      servicioCol: findColumn(headers, [/servicio/]),
+      fechaCol: findColumn(headers, [/fecha.*viaje/]),
       origenCol: findColumn(headers, [/origen/]),
       destinoCol: findColumn(headers, [/destino/]),
-      servicioCol: findColumn(headers, [/servicio/]),
-      busCol: findColumn(headers, [/^bus$/]),
-      patenteCol: findColumn(headers, [/patente|placa/]),
-      asientosSucCol: findColumn(headers, [/asientos.*sucursal/]),
-      recSucCol: findColumn(headers, [/recaudacion.*sucursal/]),
-      efectivoCaminoCol: findColumn(headers, [/efectivo.*oficial.*campo/]),
-      getnetCaminoCol: findColumn(headers, [/getnet.*oficial.*campo/]),
-      recCaminoCol: findColumn(headers, [/recaudacion.*camino/]),
-      asientosCaminoCol: findColumn(headers, [/asientos.*camino/]),
+      descripcionCol: findColumn(headers, [/descripcion/]),
+      tarifaCol: findColumn(headers, [/tarifa/]),
+      montoNetoCol: findColumn(headers, [/monto neto/]),
+      tipoCol: findColumn(headers, [/tipo/]),
+      nombreSucursalCol: findColumn(headers, [/nombre de sucursal/])
     };
   }
 
@@ -203,32 +318,17 @@
     return s.toUpperCase();
   }
 
-  function detectVentasSchema(headers) {
-    return {
-      servicioCol: findColumn(headers, [/servicio/]),
-      fechaCol: findColumn(headers, [/fecha.*viaje/]),
-      origenCol: findColumn(headers, [/origen/]),
-      destinoCol: findColumn(headers, [/destino/]),
-      descripcionCol: findColumn(headers, [/descripcion/]),
-      tarifaCol: findColumn(headers, [/tarifa/]),
-      montoNetoCol: findColumn(headers, [/monto neto/]),
-      tipoCol: findColumn(headers, [/tipo/]), // Para saber si es "Tripulación" o no
-      nombreSucursalCol: findColumn(headers, [/nombre de sucursal/])
-    };
-  }
-
   function ticketKey(servicio, fecha) {
     const s = String(servicio || '').trim().toLowerCase();
     const f = String(fecha || '').trim().toLowerCase();
     if (!s || !f) return null;
-    // Usar solo la fecha (sin hora) para agrupar
     const datePart = f.split(' ')[0] || f;
     return s + '||' + datePart;
   }
 
-  /* ================================================================
-   *  ESTADO GLOBAL
-   * ================================================================ */
+  // ================================================================
+  // 3. ESTADO GLOBAL
+  // ================================================================
 
   const loaded = { A: null, B: null, C: null };
   let consolidated = [];
@@ -257,9 +357,9 @@
     ['asientosTotal', 'Asientos Total']
   ];
 
-  /* ================================================================
-   *  DROPZONES
-   * ================================================================ */
+  // ================================================================
+  // 4. DROPZONES
+  // ================================================================
 
   function attachDropzone(zoneId, inputId, statusId, slot) {
     const zone = document.getElementById(zoneId);
@@ -298,9 +398,9 @@
     btn.disabled = !(loaded.A && loaded.B);
   }
 
-  /* ================================================================
-   *  PROCESAMIENTO PRINCIPAL
-   * ================================================================ */
+  // ================================================================
+  // 5. PROCESAMIENTO PRINCIPAL
+  // ================================================================
 
   function runProcess() {
     const msgEl = document.getElementById('processMsg');
@@ -321,10 +421,24 @@
       if (swapped) log.push({ t: 'ok', m: 'Se detectaron los archivos en orden invertido — se reordenaron automáticamente.' });
 
       flotaSchema = detectFlotaSchema(flotaFile.headers, flotaFile.data);
-      recaudacionSchema = detectRecaudacionSchema(recFile.headers, recFile.data, flotaSchema.keyType);
+      recaudacionSchema = detectRecaudacionSchema(recFile.headers);
 
+      // Log detallado de columnas detectadas
       log.push({ t: 'ok', m: `Flota (${flotaFile.fileName}): clave de cruce = "${flotaSchema.keyCol}" (tipo: ${flotaSchema.keyType}), propietario = "${flotaSchema.ownerCol || 'NO DETECTADO'}"` });
-      log.push({ t: 'ok', m: `Recaudación (${recFile.fileName}): clave de cruce = "${recaudacionSchema.keyCol}"` });
+
+      log.push({ t: 'ok', m: `Recaudación (${recFile.fileName}): columnas detectadas:` });
+      log.push({ t: 'ok', m: `  - Efectivo Camino: "${recaudacionSchema.efectivoCamino || 'No encontrada'}"` });
+      log.push({ t: 'ok', m: `  - Getnet Camino: "${recaudacionSchema.getnetCamino || 'No encontrada'}"` });
+      log.push({ t: 'ok', m: `  - Rec. Camino: "${recaudacionSchema.recCamino || 'No encontrada'}"` });
+      log.push({ t: 'ok', m: `  - Asientos Camino: "${recaudacionSchema.asientosCamino || 'No encontrada'}"` });
+      log.push({ t: 'ok', m: `  - Rec. Sucursal: "${recaudacionSchema.recSucursal || 'No encontrada'}"` });
+      log.push({ t: 'ok', m: `  - Asientos Sucursal: "${recaudacionSchema.asientosSucursal || 'No encontrada'}"` });
+      log.push({ t: 'ok', m: `  - Bus: "${recaudacionSchema.bus || 'No encontrada'}"` });
+      log.push({ t: 'ok', m: `  - Patente: "${recaudacionSchema.patente || 'No encontrada'}"` });
+
+      if (!recaudacionSchema.getnetCamino) {
+        log.push({ t: 'warn', m: '⚠️ No se encontró la columna "Getnet del oficial de campo". Verifica el nombre exacto en el archivo.' });
+      }
 
       if (!flotaSchema.ownerCol) {
         log.push({ t: 'warn', m: 'No se encontró una columna de propietario clara en el archivo de flota. Todos los buses figurarán como "Sin propietario".' });
@@ -339,9 +453,7 @@
         let owner = '';
         if (flotaSchema.ownerCol) {
           owner = String(row[flotaSchema.ownerCol] || '').trim();
-          // Si la columna "Nombre propietario" está vacía pero "Empresarioste" tiene datos, usarla
           if (!owner) {
-            // Intentar con "Empresarioste" si existe
             const empresariosteCol = findColumn(flotaFile.headers, [/empresarioste/]);
             if (empresariosteCol) {
               owner = String(row[empresariosteCol] || '').trim();
@@ -352,7 +464,7 @@
         busIndex.set(norm, { owner, rawId: row[flotaSchema.keyCol] });
       });
 
-      // Procesar tickets (Informe de Ventas) - Opcional
+      // Procesar tickets (Informe de Ventas) - OPCIONAL
       ticketsByKey = null;
       ventasSchema = null;
       let ticketTotal = 0;
@@ -369,7 +481,6 @@
           const tipo = ventasSchema.tipoCol ? row[ventasSchema.tipoCol] : '';
           const nombreSucursal = ventasSchema.nombreSucursalCol ? row[ventasSchema.nombreSucursalCol] : '';
           const montoNeto = ventasSchema.montoNetoCol ? parseMoneyCL(row[ventasSchema.montoNetoCol]) : 0;
-          // Solo contar como "Sucursal" si NO es "Tripulación"
           const esSucursal = tipo.trim().toLowerCase() !== 'tripulación' && nombreSucursal.trim().toLowerCase() !== 'tripulación';
           ticketsByKey.get(key).push({
             descripcion: ventasSchema.descripcionCol ? row[ventasSchema.descripcionCol] : '',
@@ -389,18 +500,22 @@
       consolidated = [];
 
       recFile.data.forEach(row => {
-        const rawKey = row[recaudacionSchema.keyCol];
+        // ============================================================
+        // MATCHING EN CASCADA
+        // ============================================================
+
+        // 1. Coincidencia exacta por N° Bus
+        const rawKey = row[recaudacionSchema.bus] || row[flotaSchema.keyCol];
         let norm = normalizeKeyValue(rawKey, flotaSchema.keyType);
         let info = null;
         let busFound = false;
 
-        // 1. Intento de coincidencia exacta por clave normalizada
         if (norm !== null) {
           info = busIndex.get(norm);
           if (info) busFound = true;
         }
 
-        // 2. Si no hay coincidencia exacta, intentar buscar el número de bus en el texto de la fila
+        // 2. Búsqueda de número dentro del texto
         if (!busFound && flotaSchema.keyType === 'busnum') {
           const rowText = Object.values(row).join(' ').toUpperCase();
           for (const [key, value] of busIndex) {
@@ -413,9 +528,9 @@
           }
         }
 
-        // 3. Si aún no se encontró, intentar por patente (si está disponible)
-        if (!busFound && recaudacionSchema.patenteCol) {
-          const patenteRaw = row[recaudacionSchema.patenteCol];
+        // 3. Coincidencia por Patente
+        if (!busFound && recaudacionSchema.patente) {
+          const patenteRaw = row[recaudacionSchema.patente];
           if (patenteRaw) {
             const patenteNorm = normalizeKeyValue(patenteRaw, 'patente');
             if (patenteNorm) {
@@ -434,19 +549,24 @@
 
         const propietario = info ? info.owner : (norm === null ? 'Sin dato de bus' : 'Sin asignar');
 
-        const recSucursal = recaudacionSchema.recSucCol ? parseMoneyCL(row[recaudacionSchema.recSucCol]) : 0;
-        const asientosSuc = recaudacionSchema.asientosSucCol ? toInt(row[recaudacionSchema.asientosSucCol]) : 0;
-        const efectivoCamino = recaudacionSchema.efectivoCaminoCol ? parseMoneyCL(row[recaudacionSchema.efectivoCaminoCol]) : 0;
-        const getnetCamino = recaudacionSchema.getnetCaminoCol ? parseMoneyCL(row[recaudacionSchema.getnetCaminoCol]) : 0;
-        const recCamino = recaudacionSchema.recCaminoCol ? parseMoneyCL(row[recaudacionSchema.recCaminoCol]) : 0;
-        const asientosCamino = recaudacionSchema.asientosCaminoCol ? toInt(row[recaudacionSchema.asientosCaminoCol]) : 0;
+        // ============================================================
+        // LECTURA DE DATOS DESDE EL ARCHIVO DE RECAUDACIÓN
+        // ============================================================
 
-        const servicioVal = recaudacionSchema.servicioCol ? row[recaudacionSchema.servicioCol] : '';
-        const fechaVal = recaudacionSchema.fechaCol ? row[recaudacionSchema.fechaCol] : '';
+        const recSucursal = recaudacionSchema.recSucursal ? parseMoneyCL(row[recaudacionSchema.recSucursal]) : 0;
+        const asientosSuc = recaudacionSchema.asientosSucursal ? toInt(row[recaudacionSchema.asientosSucursal]) : 0;
+        const recCamino = recaudacionSchema.recCamino ? parseMoneyCL(row[recaudacionSchema.recCamino]) : 0;
+        const asientosCamino = recaudacionSchema.asientosCamino ? toInt(row[recaudacionSchema.asientosCamino]) : 0;
+
+        // EFECTIVO Y GETNET - AHORA CON LA COLUMNA CORRECTA
+        const efectivoCamino = recaudacionSchema.efectivoCamino ? parseMoneyCL(row[recaudacionSchema.efectivoCamino]) : 0;
+        const getnetCamino = recaudacionSchema.getnetCamino ? parseMoneyCL(row[recaudacionSchema.getnetCamino]) : 0;
+
+        const servicioVal = recaudacionSchema.servicio ? row[recaudacionSchema.servicio] : '';
+        const fechaVal = recaudacionSchema.fecha ? row[recaudacionSchema.fecha] : '';
         const ticketKeyVal = ticketKey(servicioVal, fechaVal);
         const tickets = (ticketsByKey && ticketKeyVal !== null) ? (ticketsByKey.get(ticketKeyVal) || []) : [];
 
-        // Calcular recaudación de sucursal a partir de tickets (si está disponible)
         let recSucursalFromTickets = 0;
         let asientosSucursalFromTickets = 0;
         if (tickets.length > 0) {
@@ -458,22 +578,25 @@
           });
         }
 
+        const finalRecSucursal = recSucursalFromTickets > 0 ? recSucursalFromTickets : recSucursal;
+        const finalAsientosSuc = asientosSucursalFromTickets > 0 ? asientosSucursalFromTickets : asientosSuc;
+
         consolidated.push({
           fecha: fechaVal,
           servicio: servicioVal,
-          origen: recaudacionSchema.origenCol ? row[recaudacionSchema.origenCol] : '',
-          destino: recaudacionSchema.destinoCol ? row[recaudacionSchema.destinoCol] : '',
-          busRaw: row[recaudacionSchema.busCol] || '',
-          patenteRaw: row[recaudacionSchema.patenteCol] || '',
+          origen: recaudacionSchema.origen ? row[recaudacionSchema.origen] : '',
+          destino: recaudacionSchema.destino ? row[recaudacionSchema.destino] : '',
+          busRaw: row[recaudacionSchema.bus] || '',
+          patenteRaw: row[recaudacionSchema.patente] || '',
           propietario: propietario,
-          recSucursal: recSucursalFromTickets || recSucursal,
-          asientosSucursal: asientosSucursalFromTickets || asientosSuc,
+          recSucursal: finalRecSucursal,
+          asientosSucursal: finalAsientosSuc,
           efectivoCamino: efectivoCamino,
           getnetCamino: getnetCamino,
           recCamino: recCamino,
           asientosCamino: asientosCamino,
-          recTotal: (recSucursalFromTickets || recSucursal) + recCamino,
-          asientosTotal: (asientosSucursalFromTickets || asientosSuc) + asientosCamino,
+          recTotal: finalRecSucursal + recCamino,
+          asientosTotal: finalAsientosSuc + asientosCamino,
           tickets,
           ticketKeyVal
         });
@@ -487,11 +610,28 @@
 
       log.push({ t: unmatched ? 'warn' : 'ok', m: `Servicios cruzados con éxito: ${matched}  ·  sin propietario identificado: ${unmatched}  ·  sin bus válido en la fila: ${invalidKey}` });
 
-      // Resumen por propietario
+      // ============================================================
+      // AGRUPACIÓN POR PROPIETARIO
+      // ============================================================
+
       const ownerMap = new Map();
       consolidated.forEach(row => {
         const key = row.propietario;
-        if (!ownerMap.has(key)) ownerMap.set(key, { propietario: key, buses: new Set(), servicios: 0, recSucursal: 0, asientosSucursal: 0, efectivoCamino: 0, getnetCamino: 0, recCamino: 0, asientosCamino: 0, recTotal: 0, asientosTotal: 0 });
+        if (!ownerMap.has(key)) {
+          ownerMap.set(key, {
+            propietario: key,
+            buses: new Set(),
+            servicios: 0,
+            recSucursal: 0,
+            asientosSucursal: 0,
+            efectivoCamino: 0,
+            getnetCamino: 0,
+            recCamino: 0,
+            asientosCamino: 0,
+            recTotal: 0,
+            asientosTotal: 0
+          });
+        }
         const o = ownerMap.get(key);
         if (row.busRaw) o.buses.add(String(row.busRaw).trim());
         o.servicios++;
@@ -504,6 +644,7 @@
         o.recTotal += row.recTotal;
         o.asientosTotal += row.asientosTotal;
       });
+
       ownerSummary = Array.from(ownerMap.values()).map(o => ({
         ...o,
         nBuses: o.buses.size,
@@ -531,16 +672,19 @@
     }
   }
 
-  /* ================================================================
-   *  RENDERIZADO DE RESULTADOS
-   * ================================================================ */
+  // ================================================================
+  // 6. RENDERIZADO DE RESULTADOS
+  // ================================================================
 
   function renderResults(log) {
     document.getElementById('resultsSection').hidden = false;
 
     document.getElementById('mappingNote').textContent =
       `Cruce realizado por ${lastRunMeta.flotaSchema.keyType === 'patente' ? 'patente' : 'número de bus'}. ` +
-      `Flota: "${lastRunMeta.flotaSchema.keyCol}" → Recaudación: "${lastRunMeta.recaudacionSchema.keyCol}".`;
+      `Flota: "${lastRunMeta.flotaSchema.keyCol}" → Recaudación: "${lastRunMeta.recaudacionSchema.bus || '?'}". ` +
+      `Recaudación Camino = columna "Recaudación en camino" (ya sumada). ` +
+      `Efectivo Camino = "${lastRunMeta.recaudacionSchema.efectivoCamino || '?'}", ` +
+      `Getnet Camino = "${lastRunMeta.recaudacionSchema.getnetCamino || '?'}"`;
 
     const statGrid = document.getElementById('statGrid');
     statGrid.innerHTML = `
@@ -570,7 +714,6 @@
     const logBox = document.getElementById('logBox');
     logBox.innerHTML = log.map(l => `<div class="l-${l.t}">${l.t === 'warn' ? '⚠️' : '✅'} ${escHtml(l.m)}</div>`).join('');
 
-    // Tabla de propietarios
     const tbody = document.getElementById('ownerTableBody');
     tbody.innerHTML = ownerSummary.map((o, idx) => {
       const flagged = ['Sin asignar', 'Sin dato de bus'].includes(o.propietario);
@@ -598,10 +741,10 @@
       });
     });
 
-    // Tabla detallada (primeras 300 filas)
     const headRow = document.getElementById('detailHeadRow');
-    headRow.innerHTML = DETAIL_COLUMNS.map(([k, label]) => `<th${(/rec|total|asientos|efectivo|getnet/.test(k) ? ' class="num"' : '')}>${label}</th>`).join('') +
-      (lastRunMeta.ticketsLoaded ? '<th class="num">Boletos</th>' : '');
+    headRow.innerHTML = DETAIL_COLUMNS.map(([k, label]) =>
+      `<th${(/rec|total|asientos|efectivo|getnet/.test(k) ? ' class="num"' : '')}>${label}</th>`
+    ).join('') + (lastRunMeta.ticketsLoaded ? '<th class="num">Boletos</th>' : '');
 
     document.getElementById('detailDesc').textContent = lastRunMeta.ticketsLoaded ?
       'Cada fila es un servicio, con el propietario ya agregado. Haz clic en una fila para ver el detalle de boletos vendidos. Se muestran las primeras 300 filas; el Excel consolidado incluye la totalidad.' :
@@ -615,9 +758,15 @@
       const cells = DETAIL_COLUMNS.map(([k]) => {
         let val = row[k];
         let cls = '';
-        if (['recSucursal', 'efectivoCamino', 'getnetCamino', 'recCamino', 'recTotal'].includes(k)) { val = fmtCLP(val);
-          cls = ' class="num mono"'; } else if (['asientosSucursal', 'asientosCamino', 'asientosTotal'].includes(k)) { val = fmtInt(val);
-          cls = ' class="num mono"'; } else if (k === 'propietario') { cls = ' class="owner-cell"'; }
+        if (['recSucursal', 'efectivoCamino', 'getnetCamino', 'recCamino', 'recTotal'].includes(k)) {
+          val = fmtCLP(val);
+          cls = ' class="num mono"';
+        } else if (['asientosSucursal', 'asientosCamino', 'asientosTotal'].includes(k)) {
+          val = fmtInt(val);
+          cls = ' class="num mono"';
+        } else if (k === 'propietario') {
+          cls = ' class="owner-cell"';
+        }
         return `<td${cls}>${escHtml(val)}</td>`;
       }).join('');
 
@@ -666,9 +815,9 @@
     </table>`;
   }
 
-  /* ================================================================
-   *  EXPORTACIÓN A EXCEL
-   * ================================================================ */
+  // ================================================================
+  // 7. EXPORTACIÓN A EXCEL
+  // ================================================================
 
   function detailToSheetData(rows) {
     return rows.map(row => {
@@ -758,7 +907,7 @@
       'Asientos Camino': o.asientosCamino,
       'Recaudación Total': Math.round(o.recTotal),
       'Asientos Total': o.asientosTotal,
-      'Ticket Promedio': Math.round(o.ticketProm)
+      'Promedio Por Servicio': Math.round(o.ticketProm)
     }));
     const wsResumen = XLSX.utils.json_to_sheet(resumenData);
     wsResumen['!cols'] = autoWidth(resumenData);
@@ -834,20 +983,9 @@
     XLSX.writeFile(wb, `Recaudacion_${slug}_${todayStamp()}.xlsx`);
   }
 
-  /* ================================================================
-   *  UTILIDADES DE RENDER
-   * ================================================================ */
-
-  function escHtml(s) {
-    return String(s === undefined || s === null ? '' : s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  }
-
-  /* ================================================================
-   *  INICIALIZACIÓN
-   * ================================================================ */
+  // ================================================================
+  // 8. INICIALIZACIÓN
+  // ================================================================
 
   document.addEventListener('DOMContentLoaded', () => {
     attachDropzone('dzA', 'fileA', 'dzA-status', 'A');

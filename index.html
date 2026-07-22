@@ -8,6 +8,7 @@
 </head>
 <body>
 
+  <!-- ==================== TOPBAR ==================== -->
   <div class="topbar">
     <p class="eyebrow">Kupos · Producción</p>
     <h1>Portal de Recaudación por Propietario</h1>
@@ -18,22 +19,30 @@
     <div class="route-line"></div>
   </div>
 
+  <!-- ==================== MAIN ==================== -->
   <main>
 
+    <!-- ============================================================ -->
+    <!-- SECCIÓN 1: CARGA DE ARCHIVOS                                  -->
+    <!-- ============================================================ -->
     <section class="panel" id="uploadSection">
       <h2>1 · Cargar archivos</h2>
       <p class="desc">
         Formato CSV. El orden no importa: el portal detecta automáticamente cuál corresponde a flota y cuál a recaudación.
         El informe de ventas es opcional y solo habilita el detalle de boletos por servicio.
       </p>
+
       <div class="upload-grid">
+        <!-- Dropzone A: Flota -->
         <label class="dropzone" id="dzA">
           <span class="dz-icon">🚌</span>
           <div class="dz-label">Listado de flota (buses)</div>
-          <div class="dz-hint">Patente / N° de bus + propietario</div>
+          <div class="dz-hint">N° de Bus + propietario</div>
           <div class="dz-status" id="dzA-status"></div>
           <input type="file" id="fileA" accept=".csv" />
         </label>
+
+        <!-- Dropzone B: Recaudación -->
         <label class="dropzone" id="dzB">
           <span class="dz-icon">💰</span>
           <div class="dz-label">Recaudación por servicio</div>
@@ -41,6 +50,8 @@
           <div class="dz-status" id="dzB-status"></div>
           <input type="file" id="fileB" accept=".csv" />
         </label>
+
+        <!-- Dropzone C: Ventas (opcional) -->
         <label class="dropzone" id="dzC">
           <span class="dz-icon">🎫</span>
           <div class="dz-label">Informe de ventas (boletos)</div>
@@ -49,13 +60,19 @@
           <input type="file" id="fileC" accept=".csv" />
         </label>
       </div>
+
       <div class="actions-row">
         <button class="btn btn-primary" id="btnProcess" disabled>Cruzar y generar reporte</button>
         <span id="processMsg"></span>
       </div>
     </section>
 
+    <!-- ============================================================ -->
+    <!-- SECCIÓN 2: RESULTADOS                                         -->
+    <!-- ============================================================ -->
     <section id="resultsSection" hidden>
+
+      <!-- Panel de estadísticas y log -->
       <section class="panel">
         <h2>2 · Resultado del cruce</h2>
         <p class="desc" id="mappingNote"></p>
@@ -63,6 +80,7 @@
         <div class="log-box" id="logBox"></div>
       </section>
 
+      <!-- Panel: Tabla de propietarios -->
       <section class="panel">
         <div class="actions-row" style="margin-top:0;">
           <h2 style="margin:0;">3 · Recaudación por propietario</h2>
@@ -80,13 +98,13 @@
                 <th class="num">Servicios</th>
                 <th class="num">Rec. Sucursal</th>
                 <th class="num">Asientos Sucursal</th>
-                <th class="num">Camino Efectivo</th>
-                <th class="num">Camino Getnet</th>
+                <th class="num">Efectivo Camino</th>
+                <th class="num">Getnet Camino</th>
                 <th class="num">Rec. Camino</th>
                 <th class="num">Asientos Camino</th>
-                <th class="num">Recaudación total</th>
-                <th class="num">Asientos total</th>
-                <th class="num">Ticket promedio</th>
+                <th class="num">Recaudación Total</th>
+                <th class="num">Asientos Total</th>
+                <th class="num">Promedio Por Servicio</th>
                 <th></th>
               </tr>
             </thead>
@@ -96,6 +114,7 @@
         <p class="table-note">El botón de cada fila descarga un Excel individual con el detalle de servicios de ese propietario.</p>
       </section>
 
+      <!-- Panel: Detalle consolidado -->
       <section class="panel">
         <h2>4 · Detalle consolidado <span class="count-badge" id="detailCount"></span></h2>
         <p class="desc" id="detailDesc">
@@ -108,6 +127,7 @@
           </table>
         </div>
       </section>
+
     </section>
 
     <footer class="sig">
@@ -115,7 +135,9 @@
     </footer>
   </main>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <!-- ==================== DEPENDENCIAS ==================== -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js">
+  </script>
   <script src="app.js"></script>
 </body>
 </html>
