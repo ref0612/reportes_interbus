@@ -2,7 +2,7 @@
   "use strict";
 
   // ================================================================
-  // 1. UTILIDADES BÁSICAS
+  // 1. UTILIDADES BÁSICAS (sin cambios)
   // ================================================================
 
   function normalizeHeader(h) {
@@ -177,7 +177,7 @@
   }
 
   // ================================================================
-  // DETECCIÓN DE RECAUDACIÓN - CORREGIDO: GETNET Y OTROS
+  // DETECCIÓN DE RECAUDACIÓN - CORREGIDO: GETNET
   // ================================================================
 
   function detectRecaudacionSchema(headers) {
@@ -206,7 +206,6 @@
       [/efectivo.*oficial.*campo/]
     );
 
-    // GETNET - CORREGIDO: buscar "Getnet del oficial de campo"
     columnas.getnetCamino = buscarColumna(
       ['getnet del oficial de campo'],
       ['getnet oficial campo', 'getnet'],
@@ -406,7 +405,6 @@
       flotaSchema = detectFlotaSchema(flotaFile.headers, flotaFile.data);
       recaudacionSchema = detectRecaudacionSchema(recFile.headers);
 
-      // Log detallado de columnas detectadas
       log.push({ t: 'ok', m: `Flota (${flotaFile.fileName}): clave de cruce = "${flotaSchema.keyCol}" (tipo: ${flotaSchema.keyType}), propietario = "${flotaSchema.ownerCol || 'NO DETECTADO'}"` });
 
       log.push({ t: 'ok', m: `Recaudación (${recFile.fileName}): columnas detectadas:` });
@@ -427,7 +425,6 @@
         log.push({ t: 'warn', m: 'No se encontró una columna de propietario clara en el archivo de flota. Todos los buses figurarán como "Sin propietario".' });
       }
 
-      // Índice de flota por clave normalizada
       const busIndex = new Map();
       flotaFile.data.forEach(row => {
         const rawKey = row[flotaSchema.keyCol];
@@ -447,7 +444,6 @@
         busIndex.set(norm, { owner, rawId: row[flotaSchema.keyCol] });
       });
 
-      // Procesar tickets (Informe de Ventas) - OPCIONAL
       ticketsByKey = null;
       ventasSchema = null;
       let ticketTotal = 0;
@@ -483,11 +479,6 @@
       consolidated = [];
 
       recFile.data.forEach(row => {
-        // ============================================================
-        // MATCHING EN CASCADA (MEJORADO)
-        // ============================================================
-
-        // 1. Coincidencia exacta por N° Bus
         const rawKey = row[recaudacionSchema.bus] || row[flotaSchema.keyCol];
         let norm = normalizeKeyValue(rawKey, flotaSchema.keyType);
         let info = null;
@@ -498,15 +489,12 @@
           if (info) busFound = true;
         }
 
-        // 2. Búsqueda de número dentro del texto (SOLO si el campo Bus es numérico)
+        // Solo buscar en texto si el campo Bus es numérico
         if (!busFound && flotaSchema.keyType === 'busnum') {
-          // Verificar si rawKey es numérico (limpiamos caracteres no numéricos)
           const cleanRaw = String(rawKey || '').replace(/[^0-9]/g, '');
           if (cleanRaw.length > 0 && /^\d+$/.test(cleanRaw)) {
-            // Solo buscar si el campo Bus contiene un número
             const rowText = Object.values(row).join(' ').toUpperCase();
             for (const [key, value] of busIndex) {
-              // Usar límites de palabra para evitar falsos positivos
               const regex = new RegExp('\\b' + key + '\\b');
               if (regex.test(rowText)) {
                 info = value;
@@ -518,7 +506,6 @@
           }
         }
 
-        // 3. Coincidencia por Patente
         if (!busFound && recaudacionSchema.patente) {
           const patenteRaw = row[recaudacionSchema.patente];
           if (patenteRaw) {
@@ -539,16 +526,10 @@
 
         const propietario = info ? info.owner : (norm === null ? 'Sin dato de bus' : 'Sin asignar');
 
-        // ============================================================
-        // LECTURA DE DATOS DESDE EL ARCHIVO DE RECAUDACIÓN
-        // ============================================================
-
         const recSucursal = recaudacionSchema.recSucursal ? parseMoneyCL(row[recaudacionSchema.recSucursal]) : 0;
         const asientosSuc = recaudacionSchema.asientosSucursal ? toInt(row[recaudacionSchema.asientosSucursal]) : 0;
         const recCamino = recaudacionSchema.recCamino ? parseMoneyCL(row[recaudacionSchema.recCamino]) : 0;
         const asientosCamino = recaudacionSchema.asientosCamino ? toInt(row[recaudacionSchema.asientosCamino]) : 0;
-
-        // EFECTIVO Y GETNET
         const efectivoCamino = recaudacionSchema.efectivoCamino ? parseMoneyCL(row[recaudacionSchema.efectivoCamino]) : 0;
         const getnetCamino = recaudacionSchema.getnetCamino ? parseMoneyCL(row[recaudacionSchema.getnetCamino]) : 0;
 
@@ -600,15 +581,8 @@
 
       log.push({ t: unmatched ? 'warn' : 'ok', m: `Servicios cruzados con éxito: ${matched}  ·  sin propietario identificado: ${unmatched}  ·  sin bus válido en la fila: ${invalidKey}` });
 
-      // ============================================================
-      // AGRUPACIÓN POR PROPIETARIO (excluyendo "Sin asignar" si se desea)
-      // ============================================================
-
       const ownerMap = new Map();
       consolidated.forEach(row => {
-        // Solo agrupar si tiene un propietario válido (no "Sin asignar" ni "Sin dato de bus")
-        // Si quieres que "Sin asignar" también aparezca, elimina esta condición o modifícala.
-        // Por ahora, incluimos todo.
         const key = row.propietario;
         if (!ownerMap.has(key)) {
           ownerMap.set(key, {
@@ -977,7 +951,74 @@
   }
 
   // ================================================================
-  // 8. INICIALIZACIÓN
+  // 8. NUEVA FUNCIÓN: DESCARGAR ZIP CON INDIVIDUALES
+  // ================================================================
+
+  function exportAllOwnersZip() {
+    if (!ownerSummary.length) {
+      alert('No hay datos para exportar. Primero procesa los archivos.');
+      return;
+    }
+    if (typeof JSZip === 'undefined') {
+      alert('La librería JSZip no está cargada. Verifica tu conexión a Internet.');
+      return;
+    }
+
+    const zip = new JSZip();
+    const usedNames = new Set();
+
+    ownerSummary.forEach(o => {
+      const rows = consolidated.filter(r => r.propietario === o.propietario);
+      if (!rows.length) return;
+
+      const sheetData = detailToSheetData(rows);
+      const ws = XLSX.utils.json_to_sheet(sheetData);
+      ws['!cols'] = autoWidth(sheetData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Detalle');
+
+      if (lastRunMeta.ticketsLoaded) {
+        const ticketData = [];
+        rows.forEach(row => {
+          row.tickets.forEach(t => {
+            ticketData.push({
+              'Servicio': row.servicio,
+              'Fecha': row.fecha,
+              'Bus': row.busRaw,
+              'Descripción': t.descripcion,
+              'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
+              'Tipo': t.tipo,
+              'Monto': Math.round(t.montoNeto)
+            });
+          });
+        });
+        if (ticketData.length) {
+          const wsT = XLSX.utils.json_to_sheet(ticketData);
+          wsT['!cols'] = autoWidth(ticketData);
+          XLSX.utils.book_append_sheet(wb, wsT, 'Boletos');
+        }
+      }
+
+      const fileName = sanitizeSheetName(o.propietario, usedNames) + '.xlsx';
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      zip.file(fileName, wbout);
+    });
+
+    zip.generateAsync({ type: 'blob' }).then(function(content) {
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(content);
+      link.download = `Recaudacion_Individuales_${todayStamp()}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+    }).catch(function(err) {
+      alert('Error al generar el ZIP: ' + err.message);
+    });
+  }
+
+  // ================================================================
+  // 9. INICIALIZACIÓN
   // ================================================================
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -988,6 +1029,7 @@
     document.getElementById('btnProcess').addEventListener('click', runProcess);
     document.getElementById('btnExportAll').addEventListener('click', exportAllOwnersExcel);
     document.getElementById('btnExportConsolidado').addEventListener('click', exportConsolidadoExcel);
+    document.getElementById('btnExportZip').addEventListener('click', exportAllOwnersZip);
   });
 
 })();
