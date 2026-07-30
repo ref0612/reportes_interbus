@@ -2,7 +2,7 @@
   "use strict";
 
   // ================================================================
-  // 1. UTILIDADES BÁSICAS (sin cambios)
+  // 1. UTILIDADES BÁSICAS
   // ================================================================
 
   function normalizeHeader(h) {
@@ -17,27 +17,23 @@
   function parseCSV(text) {
     text = text.replace(/^\uFEFF/, '');
     const rows = [];
-    let row = [],
-      field = '',
-      inQuotes = false;
+    let row = [], field = '', inQuotes = false;
     for (let i = 0; i < text.length; i++) {
       const c = text[i];
       if (inQuotes) {
         if (c === '"') {
-          if (text[i + 1] === '"') { field += '"';
-            i++; } else inQuotes = false;
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
         } else field += c;
       } else {
         if (c === '"') inQuotes = true;
-        else if (c === ',') { row.push(field);
-          field = ''; } else if (c === '\r') { /* ignore */ } else if (c === '\n') { row.push(field);
-          rows.push(row);
-          row = [];
-          field = ''; } else field += c;
+        else if (c === ',') { row.push(field); field = ''; }
+        else if (c === '\r') { /* ignore */ }
+        else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+        else field += c;
       }
     }
-    if (field.length > 0 || row.length > 0) { row.push(field);
-      rows.push(row); }
+    if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
     while (rows.length && rows[rows.length - 1].every(f => f === '')) rows.pop();
     return rows;
   }
@@ -62,33 +58,185 @@
     });
   }
 
-  function parseMoneyCL(raw) {
-    if (raw === null || raw === undefined) return 0;
-    let s = String(raw).trim();
-    if (s === '') return 0;
-    s = s.replace(/[^0-9,.\-]/g, '');
-    if (s === '') return 0;
-    const lastComma = s.lastIndexOf(',');
-    const lastDot = s.lastIndexOf('.');
-    if (lastComma > -1 && lastDot > -1) {
-      if (lastComma > lastDot) s = s.replace(/\./g, '').replace(',', '.');
-      else s = s.replace(/,/g, '');
-    } else if (lastComma > -1) {
-      const decimals = s.length - lastComma - 1;
-      s = (decimals === 2) ? s.replace(',', '.') : s.replace(/,/g, '');
-    } else if (lastDot > -1) {
-      const decimals = s.length - lastDot - 1;
-      if (decimals === 2) {
-        const parts = s.split('.');
-        const dec = parts.pop();
-        s = parts.join('') + '.' + dec;
-      } else {
-        s = s.replace(/\./g, '');
-      }
+  function readSpreadsheetAsObjects(file) {
+
+    return new Promise((resolve,reject)=>{
+
+        const reader=new FileReader();
+
+        reader.onload=e=>{
+
+            try{
+
+                const data=new Uint8Array(e.target.result);
+
+                const workbook=XLSX.read(data,{
+                    type:"array",
+                    cellFormula:true,
+                    cellNF:true,
+                    cellText:true,
+                    cellDates:true
+                });
+
+                const sheet=workbook.Sheets[workbook.SheetNames[0]];
+
+                const range=XLSX.utils.decode_range(sheet["!ref"]);
+
+                const headers=[];
+
+                for(let C=range.s.c;C<=range.e.c;C++){
+
+                    const cell=sheet[
+                        XLSX.utils.encode_cell({
+                            r:range.s.r,
+                            c:C
+                        })
+                    ];
+
+                    headers.push(cell ? String(cell.w || cell.v || "").trim() : "");
+                }
+
+                const rows=[];
+
+                for(let R=range.s.r+1;R<=range.e.r;R++){
+
+                    const obj={};
+
+                    headers.forEach((header,index)=>{
+
+                        const address=XLSX.utils.encode_cell({
+                            r:R,
+                            c:index
+                        });
+
+                        const cell=sheet[address];
+
+                        if(!cell){
+
+                            obj[header]="";
+                            return;
+
+                        }
+
+                        obj[header]=getCellValue(cell);
+
+                    });
+
+                    rows.push(obj);
+
+                }
+
+                resolve(rows);
+
+            }
+
+            catch(err){
+
+                reject(err);
+
+            }
+
+        };
+
+        reader.readAsArrayBuffer(file);
+
+    });
+
+}
+
+function getCellValue(cell){
+
+  if(!cell) return "";
+
+  if(cell.w!==undefined)
+    return cell.w;
+
+  if(cell.v!==undefined)
+    return cell.v;
+
+  if(cell.f!==undefined)
+    return cell.f;
+
+  return "";
+
+}
+
+  // ================================================================
+  // parseMoneyCL - VERSIÓN DEFINITIVA CON DETECCIÓN DE SEPARADOR DE MILES
+  // ================================================================
+  function parseMoneyCL(value){
+
+  if(value===null || value===undefined)
+    return 0;
+
+  if(typeof value==="number")
+    return Math.round(value);
+
+  let s=String(value).trim();
+
+  if(s==="")
+    return 0;
+
+  s=s.replace(/\$/g,"");
+
+  s=s.replace(/\s/g,"");
+
+  if(s.includes(",") && s.includes(".")){
+
+    if(s.lastIndexOf(",")>s.lastIndexOf(".")){
+
+      s=s.replace(/\./g,"");
+
+      s=s.replace(",",".");
     }
-    const n = parseFloat(s);
-    return isNaN(n) ? 0 : n;
+
+    else{
+
+      s=s.replace(/,/g,"");
+    }
+
   }
+
+  else if(s.includes(",")){
+
+    const partes=s.split(",");
+
+    if(partes[1].length<=2){
+
+      s=s.replace(",", ".");
+    }
+
+    else{
+
+      s=s.replace(/,/g,"");
+    }
+
+  }
+
+  else{
+
+    const partes=s.split(".");
+
+    if(partes.length>2){
+
+      s=s.replace(/\./g,"");
+    }
+
+    else if(partes.length==2 && partes[1].length==3){
+
+      s=s.replace(".","");
+    }
+
+  }
+
+  const numero=parseFloat(s);
+
+  if(isNaN(numero))
+    return 0;
+
+  return Math.round(numero);
+
+}
 
   function toInt(raw) {
     const n = parseInt(String(raw || '').replace(/[^0-9\-]/g, ''), 10);
@@ -117,13 +265,11 @@
   function bestFillColumn(headers, rows, regex) {
     const candidates = headers.filter(h => regex.test(normalizeHeader(h)));
     if (!candidates.length) return null;
-    let best = null,
-      bestScore = -1;
+    let best = null, bestScore = -1;
     for (const c of candidates) {
       const filled = rows.filter(r => String(r[c] || '').trim() !== '').length;
       const score = rows.length ? filled / rows.length : 0;
-      if (score > bestScore) { bestScore = score;
-        best = c; }
+      if (score > bestScore) { bestScore = score; best = c; }
     }
     return { col: best, fillRate: bestScore };
   }
@@ -136,8 +282,7 @@
     const norm = headers.map(normalizeHeader);
     const flotaHints = [/propietari/, /chassis/, /motor/, /permiso/, /revision tecnica/, /poliza/, /patente/, /tipo bus/];
     const recHints = [/fecha.*viaje/, /origen/, /destino/, /recaudacion/, /servicio/, /bus/];
-    let flotaScore = 0,
-      recScore = 0;
+    let flotaScore = 0, recScore = 0;
     norm.forEach(h => {
       flotaHints.forEach(re => { if (re.test(h)) flotaScore++; });
       recHints.forEach(re => { if (re.test(h)) recScore++; });
@@ -175,10 +320,6 @@
       ownerFillRate: ownerCand ? ownerCand.fillRate : 0
     };
   }
-
-  // ================================================================
-  // DETECCIÓN DE RECAUDACIÓN - CORREGIDO: GETNET
-  // ================================================================
 
   function detectRecaudacionSchema(headers) {
     const columnas = {};
@@ -284,9 +425,26 @@
       descripcionCol: findColumn(headers, [/descripcion/]),
       tarifaCol: findColumn(headers, [/tarifa/]),
       montoNetoCol: findColumn(headers, [/monto neto/]),
+      boletaCol: findColumn(headers, [/^boleta$/, /numero.*boleta/, /n.*boleta/, /folio/]),
       tipoCol: findColumn(headers, [/tipo/]),
-      nombreSucursalCol: findColumn(headers, [/nombre de sucursal/])
+      nombreSucursalCol: findColumn(headers, [/nombre de sucursal/]),
+      codigoPagoCol: findColumn(headers, [/codigo de pago/, /codigo pago/])
     };
+  }
+
+  // ================================================================
+  // DETECCIÓN Y MATCHING DE BOLETAS MEJORADO (GETNET)
+  // ================================================================
+
+  function detectGetnetSchema(headers) {
+    const boletaCol = findColumn(headers, [
+      /^boleta$/, /^folio$/, /^voucher$/, /^numero.*boleta/, /^n.*boleta/, /^transaccion/
+    ]);
+    const comisionCol = findColumn(headers, [
+      /^comision$/i, /^comisiones$/i, /^monto.*comision/i, /^valor.*comision/i,
+      /^arancel$/i, /^fee$/i, /^comision/i
+    ]);
+    return { boletaCol, comisionCol };
   }
 
   function normalizeKeyValue(raw, type) {
@@ -308,6 +466,28 @@
     return s + '||' + datePart;
   }
 
+  function normalizeBoletaValue(raw){
+
+    if(raw===null)
+        return null;
+
+    if(raw===undefined)
+        return null;
+
+    if(typeof raw==="number")
+        return String(Math.round(raw));
+
+    let s=String(raw);
+
+    s=s.replace(/\D/g,"");
+
+    if(s==="")
+        return null;
+
+    return String(parseInt(s,10));
+
+}
+
   // ================================================================
   // 3. ESTADO GLOBAL
   // ================================================================
@@ -318,6 +498,8 @@
   let lastRunMeta = {};
   let ticketsByKey = null;
   let ventasSchema = null;
+  let getnetData = [];
+  let getnetSchema = null;
   let flotaSchema = null;
   let recaudacionSchema = null;
 
@@ -365,8 +547,7 @@
     input.addEventListener('change', e => {
       if (e.target.files && e.target.files[0]) process(e.target.files[0]);
     });
-    zone.addEventListener('dragover', e => { e.preventDefault();
-      zone.classList.add('drag'); });
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
     zone.addEventListener('drop', e => {
       e.preventDefault();
@@ -381,7 +562,7 @@
   }
 
   // ================================================================
-  // 5. PROCESAMIENTO PRINCIPAL (CON MATCHING MEJORADO)
+  // 5. PROCESAMIENTO PRINCIPAL
   // ================================================================
 
   function runProcess() {
@@ -394,11 +575,9 @@
       const clsB = classifyFile(loaded.B.headers);
 
       let flotaFile, recFile, swapped = false;
-      if (clsA.tipo === 'flota' && clsB.tipo === 'recaudacion') { flotaFile = loaded.A;
-        recFile = loaded.B; } else if (clsA.tipo === 'recaudacion' && clsB.tipo === 'flota') { flotaFile = loaded.B;
-        recFile = loaded.A;
-        swapped = true; } else { flotaFile = loaded.A;
-        recFile = loaded.B; }
+      if (clsA.tipo === 'flota' && clsB.tipo === 'recaudacion') { flotaFile = loaded.A; recFile = loaded.B; }
+      else if (clsA.tipo === 'recaudacion' && clsB.tipo === 'flota') { flotaFile = loaded.B; recFile = loaded.A; swapped = true; }
+      else { flotaFile = loaded.A; recFile = loaded.B; }
 
       if (swapped) log.push({ t: 'ok', m: 'Se detectaron los archivos en orden invertido — se reordenaron automáticamente.' });
 
@@ -406,16 +585,6 @@
       recaudacionSchema = detectRecaudacionSchema(recFile.headers);
 
       log.push({ t: 'ok', m: `Flota (${flotaFile.fileName}): clave de cruce = "${flotaSchema.keyCol}" (tipo: ${flotaSchema.keyType}), propietario = "${flotaSchema.ownerCol || 'NO DETECTADO'}"` });
-
-      log.push({ t: 'ok', m: `Recaudación (${recFile.fileName}): columnas detectadas:` });
-      log.push({ t: 'ok', m: `  - Efectivo Camino: "${recaudacionSchema.efectivoCamino || 'No encontrada'}"` });
-      log.push({ t: 'ok', m: `  - Getnet Camino: "${recaudacionSchema.getnetCamino || 'No encontrada'}"` });
-      log.push({ t: 'ok', m: `  - Rec. Camino: "${recaudacionSchema.recCamino || 'No encontrada'}"` });
-      log.push({ t: 'ok', m: `  - Asientos Camino: "${recaudacionSchema.asientosCamino || 'No encontrada'}"` });
-      log.push({ t: 'ok', m: `  - Rec. Sucursal: "${recaudacionSchema.recSucursal || 'No encontrada'}"` });
-      log.push({ t: 'ok', m: `  - Asientos Sucursal: "${recaudacionSchema.asientosSucursal || 'No encontrada'}"` });
-      log.push({ t: 'ok', m: `  - Bus: "${recaudacionSchema.bus || 'No encontrada'}"` });
-      log.push({ t: 'ok', m: `  - Patente: "${recaudacionSchema.patente || 'No encontrada'}"` });
 
       if (!recaudacionSchema.getnetCamino) {
         log.push({ t: 'warn', m: '⚠️ No se encontró la columna "Getnet del oficial de campo". Verifica el nombre exacto en el archivo.' });
@@ -447,39 +616,213 @@
       ticketsByKey = null;
       ventasSchema = null;
       let ticketTotal = 0;
+      let getnetMatchedCount = 0;
+      let getnetLoadedCount = 0;
+      
       if (loaded.C) {
         ventasSchema = detectVentasSchema(loaded.C.headers);
         ticketsByKey = new Map();
+        const ticketsGroupedByBoleta = new Map();
+
+        let getnetIndex = null;
+        if (getnetData.length) {
+          getnetLoadedCount = getnetData.length;
+          const getnetHeaders = Object.keys(getnetData[0] || {});
+          getnetSchema = detectGetnetSchema(getnetHeaders);
+          if (!getnetSchema.boletaCol) {
+            log.push({ t: 'warn', m: '⚠️ Getnet cargado, pero no se detectó columna de boleta. Se omitirá el cruce por boleta.' });
+          } else {
+            getnetIndex = new Map();
+            getnetData.forEach(row => {
+              const key = normalizeBoletaValue(row[getnetSchema.boletaCol]);
+              if (key !== null) {
+                if(!getnetIndex.has(key)){
+                  getnetIndex.set(key,[]);
+                }
+
+                getnetIndex.get(key).push({
+                  row,
+                  comision: parseMoneyCL(
+                    row[getnetSchema.comisionCol]
+                  )
+                });
+              }
+            });
+            if (!getnetSchema.comisionCol) {
+              log.push({ t: 'warn', m: '⚠️ Getnet cargado, pero no se detectó columna de comisión. Se asumirá comisión 0.' });
+            }
+            console.log('Getnet index creado con', getnetIndex.size, 'boletas únicas');
+          }
+        }
+
+        // FASE 1: Agrupar asientos por número de boleta
         loaded.C.data.forEach(row => {
           const servicioVal = ventasSchema.servicioCol ? row[ventasSchema.servicioCol] : '';
           const fechaVal = ventasSchema.fechaCol ? row[ventasSchema.fechaCol] : '';
           const key = ticketKey(servicioVal, fechaVal);
           if (key === null) return;
-          ticketTotal++;
-          if (!ticketsByKey.has(key)) ticketsByKey.set(key, []);
+          
           const tipo = ventasSchema.tipoCol ? row[ventasSchema.tipoCol] : '';
           const nombreSucursal = ventasSchema.nombreSucursalCol ? row[ventasSchema.nombreSucursalCol] : '';
           const montoNeto = ventasSchema.montoNetoCol ? parseMoneyCL(row[ventasSchema.montoNetoCol]) : 0;
+          
+          let boletaKey = null;
+          if (ventasSchema.boletaCol) {
+            const rawBoleta = row[ventasSchema.boletaCol];
+            boletaKey = normalizeBoletaValue(rawBoleta);
+          }
+          if (!boletaKey && ventasSchema.descripcionCol) {
+            const desc = row[ventasSchema.descripcionCol] || '';
+            const match = desc.match(/^(\d+)/);
+            if (match) boletaKey = String(parseInt(match[1], 10));
+          }
+          if (!boletaKey && ventasSchema.codigoPagoCol) {
+            const codigo = row[ventasSchema.codigoPagoCol] || '';
+            const match = codigo.match(/\d+/);
+            if (match) boletaKey = String(parseInt(match[0], 10));
+          }
+
           const esSucursal = tipo.trim().toLowerCase() !== 'tripulación' && nombreSucursal.trim().toLowerCase() !== 'tripulación';
-          ticketsByKey.get(key).push({
+          const numeroBoletaOriginal = ventasSchema.boletaCol ? row[ventasSchema.boletaCol] : '';
+
+          const ticketInfo = {
+            servicioVal, fechaVal, ticketKey: key,
             descripcion: ventasSchema.descripcionCol ? row[ventasSchema.descripcionCol] : '',
             tarifa: ventasSchema.tarifaCol ? parseMoneyCL(row[ventasSchema.tarifaCol]) : 0,
-            montoNeto: montoNeto,
-            esSucursal: esSucursal,
-            tipo: tipo,
-            nombreSucursal: nombreSucursal
+            montoNeto,
+            boletaKey,
+            numeroBoleta: numeroBoletaOriginal,
+            esSucursal,
+            tipo,
+            nombreSucursal
+          };
+
+          const finalGroupKey = boletaKey ? boletaKey : ('NO_BOLETA_' + Math.random());
+          if (!ticketsGroupedByBoleta.has(finalGroupKey)) {
+            ticketsGroupedByBoleta.set(finalGroupKey, []);
+          }
+          ticketsGroupedByBoleta.get(finalGroupKey).push(ticketInfo);
+        });
+
+        // FASE 2: Prorratear comisión por grupo de boletos
+        ticketsGroupedByBoleta.forEach((group, groupKey) => {
+          const boletaKey = group[0].boletaKey;
+          let registrosGetnet = (getnetIndex && boletaKey !== null) ? (getnetIndex.get(boletaKey) || []) : [];
+          
+          let totalComisionGetnet = 0;
+          let esPagoGetnet = false;
+          const totalNetoGrupo = group.reduce((sum, t) => sum + t.montoNeto, 0);
+
+          if (registrosGetnet.length > 0) {
+            esPagoGetnet = true;
+            registrosGetnet.forEach(reg => {
+              if (getnetSchema && getnetSchema.comisionCol) {
+                const raw = reg.row[getnetSchema.comisionCol];
+                const parsed = reg.comision;
+                totalComisionGetnet += reg.comision;
+                console.log({
+                  boleta: boletaKey,
+                  bruto: raw,
+                  tipo: typeof raw,
+                  parseado: parsed
+                });
+              }
+            });
+            // Salvaguarda: si la comisión total supera el neto del grupo en más del 50%, podría ser un cruce errado
+            if (Math.abs(totalComisionGetnet) > Math.abs(totalNetoGrupo) * 1.5) {
+              console.warn('Comisión total demasiado alta para boleta', boletaKey, 'Comisión:', totalComisionGetnet, 'Neto:', totalNetoGrupo);
+            }
+          }
+
+          totalComisionGetnet=Math.round(totalComisionGetnet);
+
+          if(totalComisionGetnet<0){
+
+            console.warn("Comisión negativa");
+
+          }
+
+          if(totalComisionGetnet>50000){
+
+            console.warn("Comisión fuera de rango");
+
+          }
+
+          console.table({
+
+              boleta:boletaKey,
+
+              filasGetnet:registrosGetnet.length,
+
+              netoGrupo:totalNetoGrupo,
+
+              comision:totalComisionGetnet
+
+          });
+
+          let comisionAcumulada = 0;
+
+          group.forEach((t, index) => {
+            let comisionTicket = 0;
+            if (esPagoGetnet) {
+              if (index === group.length - 1) {
+                comisionTicket = totalComisionGetnet - comisionAcumulada;
+              } else {
+                if (totalNetoGrupo !== 0) {
+                  comisionTicket = Math.round((t.montoNeto / totalNetoGrupo) * totalComisionGetnet);
+                } else {
+                  comisionTicket = Math.round(totalComisionGetnet / group.length);
+                }
+                comisionAcumulada += comisionTicket;
+              }
+            }
+
+            if (!ticketsByKey.has(t.ticketKey)) {
+              ticketsByKey.set(t.ticketKey, []);
+            }
+
+            ticketsByKey.get(t.ticketKey).push({
+              descripcion: t.descripcion,
+              tarifa: t.tarifa,
+              montoNeto: t.montoNeto,
+              numeroBoleta: t.numeroBoleta || t.boletaKey || '',
+              tipoPagoReal: esPagoGetnet ? 'Pago Getnet' : 'Efectivo',
+              esPagoGetnet: esPagoGetnet,
+              comisionGetnet: comisionTicket,
+              montoDepositar: t.montoNeto - comisionTicket,
+              esSucursal: t.esSucursal,
+              tipo: t.tipo,
+              nombreSucursal: t.nombreSucursal
+            });
+
+            if (esPagoGetnet) getnetMatchedCount++;
+            ticketTotal++;
           });
         });
-        log.push({ t: 'ok', m: `Informe de ventas (${loaded.C.fileName}): ${ticketTotal.toLocaleString('es-CL')} boletos indexados en ${ticketsByKey.size.toLocaleString('es-CL')} servicios` });
+        
+        log.push({ t: 'ok', m: `Informe de ventas (${loaded.C.fileName}): ${ticketTotal.toLocaleString('es-CL')} asientos indexados en ${ticketsByKey.size.toLocaleString('es-CL')} servicios` });
+        if (getnetLoadedCount > 0) {
+          log.push({
+            t: 'ok',
+            m: `Getnet aplicado sobre asientos: ${getnetMatchedCount.toLocaleString('es-CL')} coincidencias prorrateadas (filas Getnet cargadas: ${getnetLoadedCount.toLocaleString('es-CL')})`
+          });
+        }
       }
 
-      let matched = 0,
-        unmatched = 0,
-        invalidKey = 0;
+      let matched = 0, unmatched = 0, invalidKey = 0;
       consolidated = [];
 
       recFile.data.forEach(row => {
-        const rawKey = row[recaudacionSchema.bus] || row[flotaSchema.keyCol];
+        const rawBus = recaudacionSchema.bus ? row[recaudacionSchema.bus] : null;
+        const rawPatente = recaudacionSchema.patente ? row[recaudacionSchema.patente] : null;
+
+        let rawKey = null;
+        if (flotaSchema.keyType === 'patente') {
+          rawKey = rawPatente ? rawPatente : (rawBus ? rawBus : row[flotaSchema.keyCol]);
+        } else {
+          rawKey = rawBus ? rawBus : (rawPatente ? rawPatente : row[flotaSchema.keyCol]);
+        }
+
         let norm = normalizeKeyValue(rawKey, flotaSchema.keyType);
         let info = null;
         let busFound = false;
@@ -489,33 +832,13 @@
           if (info) busFound = true;
         }
 
-        // Solo buscar en texto si el campo Bus es numérico
-        if (!busFound && flotaSchema.keyType === 'busnum') {
-          const cleanRaw = String(rawKey || '').replace(/[^0-9]/g, '');
-          if (cleanRaw.length > 0 && /^\d+$/.test(cleanRaw)) {
-            const rowText = Object.values(row).join(' ').toUpperCase();
-            for (const [key, value] of busIndex) {
-              const regex = new RegExp('\\b' + key + '\\b');
-              if (regex.test(rowText)) {
-                info = value;
-                norm = key;
-                busFound = true;
-                break;
-              }
-            }
-          }
-        }
-
-        if (!busFound && recaudacionSchema.patente) {
-          const patenteRaw = row[recaudacionSchema.patente];
-          if (patenteRaw) {
-            const patenteNorm = normalizeKeyValue(patenteRaw, 'patente');
-            if (patenteNorm) {
-              info = busIndex.get(patenteNorm);
-              if (info) {
-                norm = patenteNorm;
-                busFound = true;
-              }
+        if (!busFound && rawPatente) {
+          const patenteNorm = normalizeKeyValue(rawPatente, 'patente');
+          if (patenteNorm) {
+            info = busIndex.get(patenteNorm);
+            if (info) {
+              norm = patenteNorm;
+              busFound = true;
             }
           }
         }
@@ -540,17 +863,33 @@
 
         let recSucursalFromTickets = 0;
         let asientosSucursalFromTickets = 0;
+        let getnetCaminoFromTickets = 0;
+
         if (tickets.length > 0) {
           tickets.forEach(t => {
             if (t.esSucursal) {
               recSucursalFromTickets += t.montoNeto;
               asientosSucursalFromTickets++;
+            } else {
+              if (t.esPagoGetnet) {
+                getnetCaminoFromTickets += t.montoDepositar;
+              }
             }
           });
         }
 
         const finalRecSucursal = recSucursalFromTickets > 0 ? recSucursalFromTickets : recSucursal;
         const finalAsientosSuc = asientosSucursalFromTickets > 0 ? asientosSucursalFromTickets : asientosSuc;
+
+        let finalGetnetCamino = getnetCamino;
+        let finalRecCamino = recCamino;
+        let finalRecTotal = finalRecSucursal + recCamino;
+
+        if (getnetLoadedCount > 0 && tickets.length > 0) {
+          finalGetnetCamino = getnetCaminoFromTickets;
+          finalRecCamino = efectivoCamino + finalGetnetCamino;
+          finalRecTotal = finalRecSucursal + finalRecCamino;
+        }
 
         consolidated.push({
           fecha: fechaVal,
@@ -563,10 +902,10 @@
           recSucursal: finalRecSucursal,
           asientosSucursal: finalAsientosSuc,
           efectivoCamino: efectivoCamino,
-          getnetCamino: getnetCamino,
-          recCamino: recCamino,
+          getnetCamino: finalGetnetCamino,
+          recCamino: finalRecCamino,
           asientosCamino: asientosCamino,
-          recTotal: finalRecSucursal + recCamino,
+          recTotal: finalRecTotal,
           asientosTotal: finalAsientosSuc + asientosCamino,
           tickets,
           ticketKeyVal
@@ -628,7 +967,9 @@
         flotaFile,
         recFile,
         ticketsLoaded: !!ticketsByKey,
-        ticketsTotal: ticketTotal
+        ticketsTotal: ticketTotal,
+        getnetLoaded: getnetData.length > 0,
+        getnetRows: getnetData.length
       };
 
       renderResults(log);
@@ -673,7 +1014,7 @@
       </div>
       ${lastRunMeta.ticketsLoaded ? `
       <div class="stat-card">
-        <div class="label">Boletos indexados</div>
+        <div class="label">Asientos indexados</div>
         <div class="value">${fmtInt(lastRunMeta.ticketsTotal)}</div>
       </div>` : ''}
     `;
@@ -711,7 +1052,7 @@
     const headRow = document.getElementById('detailHeadRow');
     headRow.innerHTML = DETAIL_COLUMNS.map(([k, label]) =>
       `<th${(/rec|total|asientos|efectivo|getnet/.test(k) ? ' class="num"' : '')}>${label}</th>`
-    ).join('') + (lastRunMeta.ticketsLoaded ? '<th class="num">Boletos</th>' : '');
+    ).join('') + (lastRunMeta.ticketsLoaded ? '<th class="num">Asientos</th>' : '');
 
     document.getElementById('detailDesc').textContent = lastRunMeta.ticketsLoaded ?
       'Cada fila es un servicio, con el propietario ya agregado. Haz clic en una fila para ver el detalle de boletos vendidos. Se muestran las primeras 300 filas; el Excel consolidado incluye la totalidad.' :
@@ -774,10 +1115,12 @@
         <td>${t.esSucursal ? 'Sucursal' : 'Tripulación'}</td>
         <td>${escHtml(t.tipo)}</td>
         <td class="num">${fmtCLP(t.montoNeto)}</td>
+        <td class="num">${fmtCLP(t.comisionGetnet)}</td>
+        <td class="num">${fmtCLP(t.montoDepositar)}</td>
       </tr>
     `).join('');
     return `<table class="ticket-mini-table">
-      <thead><tr><th>Descripción</th><th>Origen</th><th>Tipo</th><th class="num">Monto</th></tr></thead>
+      <thead><tr><th>Descripción</th><th>Origen</th><th>Tipo</th><th class="num">Monto</th><th class="num">Comisión</th><th class="num">Depositar</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
   }
@@ -808,8 +1151,7 @@
     let clean = String(name || 'Propietario').replace(/[\\\/\?\*\[\]:]/g, '-').trim();
     if (!clean) clean = 'Propietario';
     clean = clean.substring(0, 31);
-    let finalName = clean,
-      i = 1;
+    let finalName = clean, i = 1;
     while (used.has(finalName)) {
       const suffix = ' (' + (++i) + ')';
       finalName = clean.substring(0, 31 - suffix.length) + suffix;
@@ -841,10 +1183,14 @@
             'Fecha': row.fecha,
             'Propietario': row.propietario,
             'Bus': row.busRaw,
+            'N° Boleta': t.numeroBoleta,
             'Descripción': t.descripcion,
             'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
             'Tipo': t.tipo,
-            'Monto': Math.round(t.montoNeto)
+            'Tipo Pago Real': t.tipoPagoReal,
+            'Monto': Math.round(t.montoNeto),
+            'Comisión Getnet': Math.round(t.comisionGetnet),
+            'Monto a Depositar': Math.round(t.montoDepositar)
           });
         });
       });
@@ -897,10 +1243,14 @@
               'Fecha': row.fecha,
               'Propietario': row.propietario,
               'Bus': row.busRaw,
+              'N° Boleta': t.numeroBoleta,
               'Descripción': t.descripcion,
               'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
               'Tipo': t.tipo,
-              'Monto': Math.round(t.montoNeto)
+              'Tipo Pago Real': t.tipoPagoReal,
+              'Monto': Math.round(t.montoNeto),
+              'Comisión Getnet': Math.round(t.comisionGetnet),
+              'Monto a Depositar': Math.round(t.montoDepositar)
             });
           });
         });
@@ -933,10 +1283,14 @@
             'Servicio': row.servicio,
             'Fecha': row.fecha,
             'Bus': row.busRaw,
+            'N° Boleta': t.numeroBoleta,
             'Descripción': t.descripcion,
             'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
             'Tipo': t.tipo,
-            'Monto': Math.round(t.montoNeto)
+            'Tipo Pago Real': t.tipoPagoReal,
+            'Monto': Math.round(t.montoNeto),
+            'Comisión Getnet': Math.round(t.comisionGetnet),
+            'Monto a Depositar': Math.round(t.montoDepositar)
           });
         });
       });
@@ -951,7 +1305,7 @@
   }
 
   // ================================================================
-  // 8. NUEVA FUNCIÓN: DESCARGAR ZIP CON INDIVIDUALES
+  // 8. DESCARGAR ZIP CON INDIVIDUALES
   // ================================================================
 
   function exportAllOwnersZip() {
@@ -985,10 +1339,14 @@
               'Servicio': row.servicio,
               'Fecha': row.fecha,
               'Bus': row.busRaw,
+              'N° Boleta': t.numeroBoleta,
               'Descripción': t.descripcion,
               'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
               'Tipo': t.tipo,
-              'Monto': Math.round(t.montoNeto)
+              'Tipo Pago Real': t.tipoPagoReal,
+              'Monto': Math.round(t.montoNeto),
+              'Comisión Getnet': Math.round(t.comisionGetnet),
+              'Monto a Depositar': Math.round(t.montoDepositar)
             });
           });
         });
@@ -1025,6 +1383,51 @@
     attachDropzone('dzA', 'fileA', 'dzA-status', 'A');
     attachDropzone('dzB', 'fileB', 'dzB-status', 'B');
     attachDropzone('dzC', 'fileC', 'dzC-status', 'C');
+
+    const getnetInput = document.getElementById('getnet-file');
+    if (getnetInput) {
+      getnetInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) {
+          getnetData = [];
+          getnetSchema = null;
+          return;
+        }
+
+        readSpreadsheetAsObjects(file).then(rows => {
+          getnetData = rows;
+          getnetSchema = rows.length ? detectGetnetSchema(Object.keys(rows[0])) : null;
+          console.log('Archivo Getnet cargado correctamente. Columnas:', Object.keys(rows[0] || {}));
+          console.log('Esquema detectado:', getnetSchema);
+          
+          const container = getnetInput.closest('.file-upload-container');
+          if (container) {
+             container.style.borderStyle = 'solid';
+             container.style.borderColor = 'var(--good-600)';
+             container.style.backgroundColor = '#F1F9F4';
+             let p = container.querySelector('p');
+             if (p) {
+               p.textContent = '✓ ' + file.name + '  ·  ' + rows.length.toLocaleString('es-CL') + ' filas';
+               p.style.color = 'var(--good-600)';
+               p.style.fontWeight = '600';
+             }
+          }
+        }).catch(err => {
+          getnetData = [];
+          getnetSchema = null;
+          console.error(err.message);
+          
+          const container = getnetInput.closest('.file-upload-container');
+          if (container) {
+             let p = container.querySelector('p');
+             if (p) {
+               p.textContent = '✗ Error al leer el archivo';
+               p.style.color = 'var(--bad-600)';
+             }
+          }
+        });
+      });
+    }
 
     document.getElementById('btnProcess').addEventListener('click', runProcess);
     document.getElementById('btnExportAll').addEventListener('click', exportAllOwnersExcel);
