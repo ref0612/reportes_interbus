@@ -164,6 +164,34 @@ function getCellValue(cell){
   // ================================================================
   // parseMoneyCL - VERSIÓN DEFINITIVA CON DETECCIÓN DE SEPARADOR DE MILES
   // ================================================================
+  function parseDecimalCL(value) {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') return value;
+
+    let s = String(value).trim().replace(/\$/g, '').replace(/\s/g, '');
+    if (s === '') return 0;
+
+    if (s.includes(',') && s.includes('.')) {
+      if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
+        s = s.replace(/\./g, '').replace(',', '.');
+      } else {
+        s = s.replace(/,/g, '');
+      }
+    } else if (s.includes(',')) {
+      const parts = s.split(',');
+      s = parts.length === 2 && parts[1].length <= 2
+        ? s.replace(',', '.')
+        : s.replace(/,/g, '');
+    } else {
+      const parts = s.split('.');
+      if (parts.length > 2) s = s.replace(/\./g, '');
+      else if (parts.length === 2 && parts[1].length === 3) s = s.replace('.', '');
+    }
+
+    const number = parseFloat(s);
+    return isNaN(number) ? 0 : number;
+  }
+
   function parseMoneyCL(value){
 
   if(value===null || value===undefined)
@@ -444,7 +472,13 @@ function getCellValue(cell){
       /^comision$/i, /^comisiones$/i, /^monto.*comision/i, /^valor.*comision/i,
       /^arancel$/i, /^fee$/i, /^comision/i
     ]);
-    return { boletaCol, comisionCol };
+    const tipoTarjetaCol = findColumn(headers, [
+      /^tipo$/i, /^tipo.*tarjeta/i, /^tipo.*medio.*pago/i
+    ]);
+    const valorVentaCol = findColumn(headers, [
+      /^valor venta$/i, /^monto venta$/i, /^importe venta$/i, /^total venta$/i
+    ]);
+    return { boletaCol, comisionCol, tipoTarjetaCol, valorVentaCol };
   }
 
   function normalizeKeyValue(raw, type) {
@@ -642,14 +676,26 @@ function getCellValue(cell){
 
                 getnetIndex.get(key).push({
                   row,
-                  comision: parseMoneyCL(
+                  comision: parseDecimalCL(
                     row[getnetSchema.comisionCol]
-                  )
+                  ),
+                  valorVenta: parseDecimalCL(
+                    row[getnetSchema.valorVentaCol]
+                  ),
+                  tipoTarjeta: getnetSchema.tipoTarjetaCol
+                    ? String(row[getnetSchema.tipoTarjetaCol] || '').trim()
+                    : ''
                 });
               }
             });
             if (!getnetSchema.comisionCol) {
               log.push({ t: 'warn', m: '⚠️ Getnet cargado, pero no se detectó columna de comisión. Se asumirá comisión 0.' });
+            }
+            if (!getnetSchema.tipoTarjetaCol) {
+              log.push({ t: 'warn', m: 'Getnet cargado, pero no se detectó la columna "TIPO". Los pagos conciliados se mostrarán como "Tarjeta".' });
+            }
+            if (!getnetSchema.valorVentaCol) {
+              log.push({ t: 'warn', m: 'Getnet cargado, pero no se detectó la columna "VALOR VENTA". La comisión porcentual se mostrará como 0,0 %.' });
             }
             console.log('Getnet index creado con', getnetIndex.size, 'boletas únicas');
           }
@@ -710,12 +756,15 @@ function getCellValue(cell){
           let registrosGetnet = (getnetIndex && boletaKey !== null) ? (getnetIndex.get(boletaKey) || []) : [];
           
           let totalComisionGetnet = 0;
+          let totalValorVentaGetnet = 0;
           let esPagoGetnet = false;
+          let tipoTarjeta = '--';
           const totalNetoGrupo = group.reduce((sum, t) => sum + t.montoNeto, 0);
 
           if (registrosGetnet.length > 0) {
             esPagoGetnet = true;
             registrosGetnet.forEach(reg => {
+              totalValorVentaGetnet += reg.valorVenta;
               if (getnetSchema && getnetSchema.comisionCol) {
                 const raw = reg.row[getnetSchema.comisionCol];
                 const parsed = reg.comision;
@@ -728,12 +777,19 @@ function getCellValue(cell){
                 });
               }
             });
+            const tiposTarjeta = [...new Set(registrosGetnet
+              .map(reg => reg.tipoTarjeta)
+              .filter(Boolean))];
+            tipoTarjeta = tiposTarjeta.length > 1 ? 'Mixto' : (tiposTarjeta[0] || 'Tarjeta');
             // Salvaguarda: si la comisión total supera el neto del grupo en más del 50%, podría ser un cruce errado
             if (Math.abs(totalComisionGetnet) > Math.abs(totalNetoGrupo) * 1.5) {
               console.warn('Comisión total demasiado alta para boleta', boletaKey, 'Comisión:', totalComisionGetnet, 'Neto:', totalNetoGrupo);
             }
           }
 
+          const comisionPorcentaje = totalValorVentaGetnet > 0
+            ? (totalComisionGetnet / totalValorVentaGetnet) * 100
+            : 0;
           totalComisionGetnet=Math.round(totalComisionGetnet);
 
           if(totalComisionGetnet<0){
@@ -787,6 +843,8 @@ function getCellValue(cell){
               montoNeto: t.montoNeto,
               numeroBoleta: t.numeroBoleta || t.boletaKey || '',
               tipoPagoReal: esPagoGetnet ? 'Pago Getnet' : 'Efectivo',
+              tipoTarjeta: esPagoGetnet ? tipoTarjeta : '--',
+              comisionPorcentaje: esPagoGetnet ? comisionPorcentaje : 0,
               esPagoGetnet: esPagoGetnet,
               comisionGetnet: comisionTicket,
               montoDepositar: t.montoNeto - comisionTicket,
@@ -1114,13 +1172,15 @@ function getCellValue(cell){
         <td>${escHtml(t.descripcion)}</td>
         <td>${t.esSucursal ? 'Sucursal' : 'Tripulación'}</td>
         <td>${escHtml(t.tipo)}</td>
+        <td>${escHtml(t.tipoTarjeta)}</td>
         <td class="num">${fmtCLP(t.montoNeto)}</td>
         <td class="num">${fmtCLP(t.comisionGetnet)}</td>
+        <td class="num">${t.comisionPorcentaje.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %</td>
         <td class="num">${fmtCLP(t.montoDepositar)}</td>
       </tr>
     `).join('');
     return `<table class="ticket-mini-table">
-      <thead><tr><th>Descripción</th><th>Origen</th><th>Tipo</th><th class="num">Monto</th><th class="num">Comisión</th><th class="num">Depositar</th></tr></thead>
+      <thead><tr><th>Descripción</th><th>Origen</th><th>Tipo</th><th>Tipo de tarjeta</th><th class="num">Monto</th><th class="num">Comisión</th><th class="num">Comisión %</th><th class="num">Depositar</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
   }
@@ -1145,6 +1205,17 @@ function getCellValue(cell){
       sheetData.forEach(r => { const v = r[k] === undefined || r[k] === null ? '' : String(r[k]); if (v.length > max) max = v.length; });
       return { wch: Math.min(Math.max(max + 2, 10), 42) };
     });
+  }
+
+  function formatOneDecimalColumn(ws, sheetData, columnName) {
+    if (!sheetData.length) return;
+    const columnIndex = Object.keys(sheetData[0]).indexOf(columnName);
+    if (columnIndex === -1) return;
+    const columnLetter = XLSX.utils.encode_col(columnIndex);
+    for (let rowIndex = 2; rowIndex <= sheetData.length + 1; rowIndex++) {
+      const cell = ws[columnLetter + rowIndex];
+      if (cell) cell.z = '0.0" %"';
+    }
   }
 
   function sanitizeSheetName(name, used) {
@@ -1188,8 +1259,10 @@ function getCellValue(cell){
             'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
             'Tipo': t.tipo,
             'Tipo Pago Real': t.tipoPagoReal,
+            'Tipo de Tarjeta': t.tipoTarjeta,
             'Monto': Math.round(t.montoNeto),
             'Comisión Getnet': Math.round(t.comisionGetnet),
+            'Comisión %': Math.round(t.comisionPorcentaje * 10) / 10,
             'Monto a Depositar': Math.round(t.montoDepositar)
           });
         });
@@ -1197,6 +1270,7 @@ function getCellValue(cell){
       if (ticketData.length) {
         const wsT = XLSX.utils.json_to_sheet(ticketData);
         wsT['!cols'] = autoWidth(ticketData);
+        formatOneDecimalColumn(wsT, ticketData, 'Comisión %');
         XLSX.utils.book_append_sheet(wb, wsT, 'Boletos');
       }
     }
@@ -1248,8 +1322,10 @@ function getCellValue(cell){
               'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
               'Tipo': t.tipo,
               'Tipo Pago Real': t.tipoPagoReal,
+              'Tipo de Tarjeta': t.tipoTarjeta,
               'Monto': Math.round(t.montoNeto),
               'Comisión Getnet': Math.round(t.comisionGetnet),
+              'Comisión %': Math.round(t.comisionPorcentaje * 10) / 10,
               'Monto a Depositar': Math.round(t.montoDepositar)
             });
           });
@@ -1257,6 +1333,7 @@ function getCellValue(cell){
         if (ticketData.length) {
           const wsT = XLSX.utils.json_to_sheet(ticketData);
           wsT['!cols'] = autoWidth(ticketData);
+          formatOneDecimalColumn(wsT, ticketData, 'Comisión %');
           XLSX.utils.book_append_sheet(wb, wsT, sanitizeSheetName('Boletos', used));
         }
       }
@@ -1288,8 +1365,10 @@ function getCellValue(cell){
             'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
             'Tipo': t.tipo,
             'Tipo Pago Real': t.tipoPagoReal,
+            'Tipo de Tarjeta': t.tipoTarjeta,
             'Monto': Math.round(t.montoNeto),
             'Comisión Getnet': Math.round(t.comisionGetnet),
+            'Comisión %': Math.round(t.comisionPorcentaje * 10) / 10,
             'Monto a Depositar': Math.round(t.montoDepositar)
           });
         });
@@ -1297,6 +1376,7 @@ function getCellValue(cell){
       if (ticketData.length) {
         const wsT = XLSX.utils.json_to_sheet(ticketData);
         wsT['!cols'] = autoWidth(ticketData);
+        formatOneDecimalColumn(wsT, ticketData, 'Comisión %');
         XLSX.utils.book_append_sheet(wb, wsT, 'Boletos');
       }
     }
@@ -1344,8 +1424,10 @@ function getCellValue(cell){
               'Origen': t.esSucursal ? 'Sucursal' : 'Tripulación',
               'Tipo': t.tipo,
               'Tipo Pago Real': t.tipoPagoReal,
+              'Tipo de Tarjeta': t.tipoTarjeta,
               'Monto': Math.round(t.montoNeto),
               'Comisión Getnet': Math.round(t.comisionGetnet),
+              'Comisión %': Math.round(t.comisionPorcentaje * 10) / 10,
               'Monto a Depositar': Math.round(t.montoDepositar)
             });
           });
@@ -1353,6 +1435,7 @@ function getCellValue(cell){
         if (ticketData.length) {
           const wsT = XLSX.utils.json_to_sheet(ticketData);
           wsT['!cols'] = autoWidth(ticketData);
+          formatOneDecimalColumn(wsT, ticketData, 'Comisión %');
           XLSX.utils.book_append_sheet(wb, wsT, 'Boletos');
         }
       }
